@@ -1,6 +1,6 @@
 """
 Cold Calls – tracker d'appels en live + analytics
-Données persistées dans cold_calls_data.json
+Données persistées par utilisateur (cold_calls_benjamin.json, cold_calls_lucas.json)
 """
 from __future__ import annotations
 
@@ -14,7 +14,12 @@ import plotly.graph_objects as go
 from dash import html, dcc, Input, Output, State, callback_context, no_update, ALL
 import dash_bootstrap_components as dbc
 
-DATA_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cold_calls_data.json")
+DATA_DIR = os.path.dirname(os.path.dirname(__file__))
+USERS = ["Benjamin", "Lucas"]
+
+def get_data_file(user: str) -> str:
+    """Retourne le chemin du fichier de données pour un utilisateur."""
+    return os.path.join(DATA_DIR, f"cold_calls_{user.lower()}.json")
 
 OBJECTION_OPTIONS = [
     "Redirigé vers email",
@@ -40,38 +45,43 @@ RESULT_COLORS = {
 
 # ── Data helpers ─────────────────────────────────────────────────────
 
-def load_calls() -> list[dict]:
-    if not os.path.exists(DATA_FILE):
+def load_calls(user: str) -> list[dict]:
+    """Load calls for a specific user."""
+    data_file = get_data_file(user)
+    if not os.path.exists(data_file):
         return []
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
+    with open(data_file, "r", encoding="utf-8") as f:
         try:
             return json.load(f)
         except json.JSONDecodeError:
             return []
 
 
-def save_calls(calls: list[dict]) -> None:
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
+def save_calls(user: str, calls: list[dict]) -> None:
+    """Save calls for a specific user."""
+    data_file = get_data_file(user)
+    with open(data_file, "w", encoding="utf-8") as f:
         json.dump(calls, f, ensure_ascii=False, indent=2)
 
 
-def add_call(result: str, detail: str = "") -> None:
-    calls = load_calls()
+def add_call(user: str, result: str, detail: str = "") -> None:
+    """Add a call for a specific user."""
+    calls = load_calls(user)
     calls.append({
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "result": result,
         "detail": detail,
     })
-    save_calls(calls)
+    save_calls(user, calls)
 
 
-def undo_last_call() -> bool:
-    """Remove the last call. Returns True if something was removed."""
-    calls = load_calls()
+def undo_last_call(user: str) -> bool:
+    """Remove the last call for a user. Returns True if something was removed."""
+    calls = load_calls(user)
     if not calls:
         return False
     calls.pop()
-    save_calls(calls)
+    save_calls(user, calls)
     return True
 
 
@@ -141,7 +151,30 @@ def layout():
     return dbc.Container([
 
         # ── Section 1 : KPI & Analytics ─────────────────────────────
-        html.H5("KPI & Analytics", className="mt-3 mb-3 text-light"),
+        html.H5("KPI & Analytics", className="mt-3 mb-4 text-light"),
+
+        # ── Sélecteur d'utilisateur (design system: glassmorphism dark) ───
+        dbc.Card(
+            dbc.CardBody([
+                html.P("Utilisateur", className="text-muted mb-2 small fw-semibold"),
+                dbc.RadioItems(
+                    id="cc-user-selector",
+                    options=[{"label": user, "value": user} for user in USERS],
+                    value="Benjamin",
+                    inline=True,
+                    className="cc-user-radio",
+                    inputClassName="cc-user-radio-input",
+                    labelClassName="cc-user-radio-label",
+                ),
+            ], style={
+                "backgroundColor": "rgba(15, 23, 42, 0.6)",
+                "borderRadius": "8px",
+                "border": "1px solid rgba(34, 197, 94, 0.2)",
+                "padding": "12px 16px",
+            }),
+            className="mb-4",
+            style={"backgroundColor": "transparent", "border": "none"}
+        ),
 
         # Filtre de période
         dbc.Row([
@@ -300,9 +333,10 @@ def register_callbacks(app):
         Input("cc-btn-undo", "n_clicks"),
         Input({"type": "cc-obj-btn", "index": ALL}, "n_clicks"),
         State("cc-trigger", "data"),
+        State("cc-user-selector", "value"),
         prevent_initial_call=True,
     )
-    def handle_action(n_pitch, n_success, n_undo, n_obj_list, trigger_val):
+    def handle_action(n_pitch, n_success, n_undo, n_obj_list, trigger_val, user):
         ctx = callback_context
         if not ctx.triggered:
             return no_update, no_update, no_update, no_update, no_update
@@ -310,15 +344,15 @@ def register_callbacks(app):
         triggered_id = ctx.triggered[0]["prop_id"]
 
         if "cc-btn-pitch-fail" in triggered_id:
-            add_call("pitch_fail")
+            add_call(user, "pitch_fail")
             return trigger_val + 1, "Recalé au pitch enregistré", "danger", True, False
 
         elif "cc-btn-success" in triggered_id:
-            add_call("success")
+            add_call(user, "success")
             return trigger_val + 1, "Succès — RDV booké enregistré !", "success", True, False
 
         elif "cc-btn-undo" in triggered_id:
-            removed = undo_last_call()
+            removed = undo_last_call(user)
             msg = "Dernier appel annulé" if removed else "Aucun appel à annuler"
             return trigger_val + 1, msg, "secondary", True, False
 
@@ -330,7 +364,7 @@ def register_callbacks(app):
                 detail = id_dict.get("index", "")
             except (json.JSONDecodeError, AttributeError):
                 detail = ""
-            add_call("objection", detail)
+            add_call(user, "objection", detail)
             return trigger_val + 1, f"Objection : {detail}", "warning", True, False
 
         return no_update, no_update, no_update, no_update, no_update
@@ -346,9 +380,10 @@ def register_callbacks(app):
         Output("cc-today-top-obj", "children"),
         Input("cc-period", "value"),
         Input("cc-trigger", "data"),
+        Input("cc-user-selector", "value"),
     )
-    def update_analytics(period, _trigger):
-        all_calls = load_calls()
+    def update_analytics(period, _trigger, user):
+        all_calls = load_calls(user)
         filtered = filter_by_period(all_calls, period)
         df = calls_to_df(filtered)
         kpis = compute_kpis(df)
