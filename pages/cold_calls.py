@@ -154,27 +154,25 @@ def layout():
         html.H5("KPI & Analytics", className="mt-3 mb-4 text-light"),
 
         # ── Sélecteur d'utilisateur (design system: glassmorphism dark) ───
-        dbc.Card(
-            dbc.CardBody([
-                html.P("Utilisateur", className="text-muted mb-2 small fw-semibold"),
-                dbc.RadioItems(
-                    id="cc-user-selector",
-                    options=[{"label": user, "value": user} for user in USERS],
-                    value="Benjamin",
-                    inline=True,
-                    className="cc-user-radio",
-                    inputClassName="cc-user-radio-input",
-                    labelClassName="cc-user-radio-label",
-                ),
-            ], style={
-                "backgroundColor": "rgba(15, 23, 42, 0.6)",
-                "borderRadius": "8px",
-                "border": "1px solid rgba(34, 197, 94, 0.2)",
-                "padding": "12px 16px",
-            }),
-            className="mb-4",
-            style={"backgroundColor": "transparent", "border": "none"}
-        ),
+        dbc.Row([
+            dbc.Col(
+                html.Div([
+                    dbc.RadioItems(
+                        id="cc-user-selector",
+                        options=[
+                            {"label": "🐼  Benjamin", "value": "Benjamin"},
+                            {"label": "😺  Lucas", "value": "Lucas"}
+                        ],
+                        value="Benjamin",
+                        inline=True,
+                        className="cc-user-radio",
+                        inputClassName="cc-user-radio-input",
+                        labelClassName="cc-user-radio-label",
+                    ),
+                ], className="d-flex justify-content-center"),
+                width=12,
+            ),
+        ], className="mb-4"),
 
         # Filtre de période
         dbc.Row([
