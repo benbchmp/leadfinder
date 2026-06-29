@@ -9,14 +9,16 @@ qui n'ont pas encore de site web (prospects potentiels).
 AVANT DE COMMENCER
 ------------------
 
-1. Tu as besoin d'une clé Google API (Benjamin te la donnera).
+1. Connexion Internet requise : l'application en a besoin pour s'installer
+   la première fois, pour afficher correctement le design (thème + icônes),
+   et pour chercher des prospects sur Google.
 
-2. Dans le dossier du projet, tu trouveras un fichier ".env.example".
-   - Fais une copie de ce fichier
-   - Renomme la copie en ".env" (sans le .example)
-   - Ouvre le fichier .env avec TextEdit
-   - Remplace COLLE_TA_CLE_GOOGLE_ICI par la clé que Benjamin t'a donnée
-   - Sauvegarde et ferme le fichier
+2. La clé Google est DÉJÀ configurée (Benjamin l'a mise dans le fichier
+   ".env" pour toi). Tu n'as rien à régler : passe directement à la
+   section "LANCER L'APPLICATION".
+
+   (Si jamais le fichier ".env" venait à manquer : copie ".env.example",
+    renomme la copie en ".env" et colle la clé que Benjamin t'a donnée.)
 
 
 LANCER L'APPLICATION
@@ -45,7 +47,7 @@ UTILISER L'APPLICATION
 3. Clique sur "Rechercher"
 4. Les résultats s'affichent dans le tableau
 5. Par défaut, seules les entreprises SANS site web sont affichées
-6. Clique sur "Export CSV" pour sauvegarder les résultats
+6. Clique sur le bouton vert "Excel" pour sauvegarder les résultats
 
 
 ARRÊTER L'APPLICATION
@@ -58,6 +60,7 @@ EN CAS DE PROBLÈME
 -------------------
 
 - "Python n'est pas installé" → Va sur python.org et installe Python 3
+- Page blanche ou sans icônes → vérifie ta connexion Internet, puis rafraîchis (Cmd+R)
 - "Le fichier .env est manquant" → Relis la section "Avant de commencer"
 - "Erreur API" → Vérifie que la clé Google dans le .env est correcte
 - L'appli ne se lance pas → Vérifie que tu es bien dans le bon dossier

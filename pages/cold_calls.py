@@ -2,6 +2,7 @@
 Cold Calls – tracker d'appels en live + analytics
 Données persistées dans cold_calls_data.json
 """
+from __future__ import annotations
 
 import json
 import os
@@ -266,10 +267,8 @@ def layout():
             className="mb-4",
         ),
 
-        # Refresh interval (toutes les 5s pour garder les stats à jour)
-        dcc.Interval(id="cc-interval", interval=5000, n_intervals=0),
-
-        # Store pour trigger refresh après action
+        # Store pour trigger refresh après action (les stats se mettent à jour
+        # à chaque appel enregistré — plus besoin de rafraîchir toutes les 5 s).
         dcc.Store(id="cc-trigger", data=0),
 
     ], fluid=True)
@@ -347,9 +346,8 @@ def register_callbacks(app):
         Output("cc-today-top-obj", "children"),
         Input("cc-period", "value"),
         Input("cc-trigger", "data"),
-        Input("cc-interval", "n_intervals"),
     )
-    def update_analytics(period, _trigger, _interval):
+    def update_analytics(period, _trigger):
         all_calls = load_calls()
         filtered = filter_by_period(all_calls, period)
         df = calls_to_df(filtered)

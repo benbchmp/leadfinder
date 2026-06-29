@@ -1,8 +1,16 @@
 """
 LeadFinder – page de recherche de leads Google Maps
 """
+from __future__ import annotations
 
-import io, os, re, time, requests, pandas as pd
+import io
+import os
+import re
+import threading
+import uuid
+
+import requests
+import pandas as pd
 from dotenv import load_dotenv
 from dash import html, dcc, Output, Input, State, no_update, ALL, callback_context
 import dash_bootstrap_components as dbc
@@ -42,62 +50,50 @@ ACTIVITY_OPTIONS = [
     _opt("Vétérinaire"), _opt("Déménagement"), _opt("Nettoyage"),
 ]
 
-# ── Google Places helpers ────────────────────────────────────────────
+# ── Google Places API (New) ──────────────────────────────────────────
+# On utilise la « Places API (New) » de Google. Un SEUL appel renvoie déjà le
+# nom, l'adresse, le site web, le téléphone et la note — plus besoin d'un appel
+# « détails » par établissement (l'ancienne API textsearch/details est
+# abandonnée par Google et n'est plus activable sur les projets récents).
 
-PLACES_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
+PLACES_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+
+_FIELD_MASK = ",".join([
+    "nextPageToken",
+    "places.id",
+    "places.displayName",
+    "places.formattedAddress",
+    "places.nationalPhoneNumber",
+    "places.websiteUri",
+    "places.rating",
+    "places.userRatingCount",
+    "places.businessStatus",
+    "places.googleMapsUri",
+])
 
 
 def text_search(query: str, page_token: str | None = None) -> dict:
-    params = {"query": query, "key": API_KEY}
-    if page_token:
-        params["pagetoken"] = page_token
-    r = requests.get(PLACES_SEARCH_URL, params=params, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    if data.get("status") not in ("OK", "ZERO_RESULTS"):
-        raise RuntimeError(f"Places API error: {data.get('status')} – {data.get('error_message', '')}")
-    return data
-
-
-def get_place_details(place_id: str) -> dict:
-    params = {
-        "place_id": place_id,
-        "fields": "formatted_phone_number,website",
-        "key": API_KEY,
+    """Recherche textuelle (Places API New). Renvoie le JSON brut de la page.
+    Une page = jusqu'à 20 commerces, avec un `nextPageToken` pour la suivante.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": API_KEY or "",
+        "X-Goog-FieldMask": _FIELD_MASK,
     }
-    r = requests.get(PLACE_DETAILS_URL, params=params, timeout=15)
-    r.raise_for_status()
-    return r.json().get("result", {})
-
-
-def search_all_pages(query: str, max_pages: int = 3) -> list[dict]:
-    all_places: list[dict] = []
-    token = None
-    for _ in range(max_pages):
-        data = text_search(query, page_token=token)
-        all_places.extend(data.get("results", []))
-        token = data.get("next_page_token")
-        if not token:
-            break
-        time.sleep(2)
-    return all_places
-
-
-def enrich_with_details(places: list[dict]) -> list[dict]:
-    for p in places:
-        pid = p.get("place_id")
-        if not pid:
-            continue
+    body = {"textQuery": query, "languageCode": "fr", "regionCode": "FR"}
+    if page_token:
+        body["pageToken"] = page_token
+    r = requests.post(PLACES_SEARCH_URL, headers=headers, json=body, timeout=30)
+    if r.status_code != 200:
         try:
-            details = get_place_details(pid)
-            p["_phone"] = details.get("formatted_phone_number", "")
-            p["_website"] = details.get("website", "")
+            err = r.json().get("error", {})
+            status = err.get("status", "")
+            message = err.get("message", "")
         except Exception:
-            p["_phone"] = ""
-            p["_website"] = ""
-        time.sleep(0.1)
-    return places
+            status, message = str(r.status_code), r.text[:200]
+        raise RuntimeError(f"Places API error: {status} – {message}")
+    return r.json()
 
 
 def _extract_city_postal(address: str) -> str:
@@ -116,51 +112,167 @@ def _extract_city_postal(address: str) -> str:
 def places_to_df(places: list[dict]) -> pd.DataFrame:
     rows = []
     for p in places:
-        place_id = p.get("place_id", "")
         rows.append({
-            "Nom": p.get("name", ""),
-            "Localisation": _extract_city_postal(p.get("formatted_address", "")),
-            "Téléphone": p.get("_phone", ""),
+            "Nom": (p.get("displayName") or {}).get("text", ""),
+            "Localisation": _extract_city_postal(p.get("formattedAddress", "")),
+            "Téléphone": p.get("nationalPhoneNumber", ""),
             "Note": p.get("rating", ""),
-            "Avis": p.get("user_ratings_total", ""),
-            "Site web": p.get("_website", ""),
-            "Statut": p.get("business_status", ""),
-            "Google Maps": f"https://www.google.com/maps/place/?q=place_id:{place_id}" if place_id else "",
+            "Avis": p.get("userRatingCount", ""),
+            "Site web": p.get("websiteUri", ""),
+            "Statut": p.get("businessStatus", ""),
+            "Google Maps": p.get("googleMapsUri", ""),
         })
     return pd.DataFrame(rows)
+
+
+# ── Recherche en arrière-plan + suivi de progression ─────────────────
+# La recherche tourne dans un thread pour ne pas figer l'interface. Elle écrit
+# son avancement dans _SEARCH_STATE ; un dcc.Interval le lit toutes les ~400 ms
+# pour alimenter la barre de progression. Zéro dépendance externe.
+
+_search_lock = threading.Lock()
+_SEARCH_STATE: dict[str, dict] = {}
+
+
+def _friendly_error(exc: Exception) -> str:
+    text = str(exc)
+    low = text.lower()
+    if "legacy api" in low or "not enabled" in low or "has not been used" in low or "serviceusage" in low:
+        return ("L'API « Places API (New) » n'est pas activée sur ton projet Google Cloud. "
+                "Active-la dans Google Cloud Console (APIs & Services → Library), puis réessaie.")
+    if ("permission_denied" in low or "request_denied" in low or "api key" in low
+            or "api_key" in low or "apikey" in low or "invalid" in low):
+        return ("Erreur de clé API Google : la clé est invalide, restreinte, ou l'API "
+                "« Places API (New) » n'est pas activée. Vérifie le fichier .env et Google Cloud.")
+    if "over_query_limit" in low or "quota" in low or "resource_exhausted" in low:
+        return "Quota Google dépassé. Réessaie plus tard ou vérifie la facturation Google Cloud."
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "Impossible de joindre Google. Vérifie ta connexion Internet, puis réessaie."
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "Google met trop de temps à répondre. Réessaie dans un instant."
+    return f"Une erreur est survenue pendant la recherche : {text[:200]}"
+
+
+def _run_search_job(token: str, city: str, activity: str) -> None:
+    def update(**kw):
+        with _search_lock:
+            st = _SEARCH_STATE.get(token)
+            if st is not None:
+                st.update(kw)
+
+    try:
+        if not API_KEY:
+            raise RuntimeError("API key manquante (GOOGLE_API_KEY absent du .env).")
+
+        query = f"{activity} à {city}"
+        update(pct=12, message="Recherche des commerces sur Google Maps…")
+
+        places: list[dict] = []
+        page_token = None
+        for page in range(3):  # jusqu'à 3 pages × 20 = 60 commerces
+            data = text_search(query, page_token=page_token)
+            places.extend(data.get("places", []))
+            update(pct=min(90, 25 + page * 25),
+                   message=f"Recherche des commerces… ({len(places)} trouvés)")
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+
+        if not places:
+            update(done=True, pct=100, message="Aucun commerce trouvé.", results=[])
+            return
+
+        update(pct=95, message="Mise en forme des résultats…")
+        df = places_to_df(places)
+        update(done=True, pct=100,
+               message=f"Terminé — {len(df)} commerces récupérés.",
+               results=df.to_dict("records"))
+    except Exception as exc:  # noqa: BLE001 - on veut tout attraper pour l'afficher
+        update(done=True, error=True, pct=100,
+               message=_friendly_error(exc), results=[])
+
+
+# ── Petits composants d'affichage ────────────────────────────────────
+
+ALL_COLS = ["Nom", "Localisation", "Téléphone", "Note", "Avis", "Site web", "Google Maps"]
+
+
+def _progress_view(pct: int, message: str) -> html.Div:
+    return html.Div(
+        [
+            dbc.Progress(
+                value=pct, color="info", striped=True, animated=True,
+                style={"height": "8px"}, className="lf-progress mb-2",
+            ),
+            html.Div(message, className="lf-progress-status small"),
+        ],
+        className="lf-progress-wrap",
+        role="status", **{"aria-live": "polite"},
+    )
+
+
+def _welcome_state() -> html.Div:
+    return html.Div(
+        [
+            html.I(className="bi bi-search lf-empty-icon"),
+            html.P("Trouve des commerces sans site web à prospecter.",
+                   className="mb-1 fw-medium"),
+            html.Small("Saisis une ville et une activité, puis clique sur « Rechercher » "
+                       "(ou appuie sur Entrée).", className="text-muted"),
+        ],
+        className="lf-empty-state text-center py-5",
+    )
+
+
+def _no_results_state() -> html.Div:
+    return html.Div(
+        [
+            html.I(className="bi bi-inbox lf-empty-icon"),
+            html.P("Aucun commerce trouvé pour cette recherche.", className="mb-1 fw-medium"),
+            html.Small("Essaie une autre ville ou une autre activité.", className="text-muted"),
+        ],
+        className="lf-empty-state text-center py-5",
+    )
 
 
 # ── Layout ───────────────────────────────────────────────────────────
 
 def layout():
     return dbc.Container([
-        # Search form
-        dbc.Row([
-            dbc.Col(dbc.Input(id="lf-input-city", placeholder="Ville (ex: Lyon)", type="text"), md=4),
-            dbc.Col(html.Div([
-                dbc.Input(
-                    id="lf-input-activity",
-                    placeholder="Ex: Plombier, Architecte, Laveur de vitres...",
-                    type="text",
-                    list="lf-activity-suggestions",
-                ),
-                html.Datalist(
-                    id="lf-activity-suggestions",
-                    children=[html.Option(value=o["value"]) for o in ACTIVITY_OPTIONS if not o.get("disabled")],
-                ),
-            ]), md=4),
-            dbc.Col(dbc.Button("Rechercher", id="lf-btn-search", color="primary", className="w-100"), md=2),
-            dbc.Col(dbc.Button(
-                html.I(className="bi bi-file-earmark-excel", style={"fontSize": "1.1rem"}),
-                id="lf-btn-csv",
-                color="success",
-                outline=True,
-                title="Exporter en Excel",
-                style={"padding": "6px 12px"},
-            ), md="auto", className="d-flex align-items-center"),
-        ], className="mb-3"),
+        html.H5("Recherche de leads", className="mt-3 mb-3 text-light"),
 
-        # Filters row
+        # ── Barre de recherche (carte épurée, champs avec icône) ─────
+        dbc.Card(dbc.CardBody(
+            dbc.Row([
+                dbc.Col(dbc.InputGroup([
+                    dbc.InputGroupText(html.I(className="bi bi-geo-alt")),
+                    dbc.Input(
+                        id="lf-input-city", placeholder="Ville (ex : Lyon)",
+                        type="text", autoFocus=True,
+                    ),
+                ]), md=5),
+                dbc.Col(html.Div([
+                    dbc.InputGroup([
+                        dbc.InputGroupText(html.I(className="bi bi-shop")),
+                        dbc.Input(
+                            id="lf-input-activity",
+                            placeholder="Activité (ex : Plombier, Coiffeur, Restaurant…)",
+                            type="text", list="lf-activity-suggestions",
+                        ),
+                    ]),
+                    html.Datalist(
+                        id="lf-activity-suggestions",
+                        children=[html.Option(value=o["value"]) for o in ACTIVITY_OPTIONS if not o.get("disabled")],
+                    ),
+                ]), md=5),
+                dbc.Col(dbc.Button(
+                    [html.I(className="bi bi-search me-2"), "Rechercher"],
+                    id="lf-btn-search", color="primary", className="w-100",
+                ), md=2),
+            ], className="g-2", align="center"),
+        ), className="lf-search-card mb-3"),
+
+        # ── Barre de filtres / actions ──────────────────────────────
         dbc.Row([
             dbc.Col(dbc.Checklist(
                 id="lf-filter-no-site",
@@ -178,15 +290,21 @@ def layout():
                 children=[
                     dbc.Checklist(
                         id="lf-col-visibility",
-                        options=[{"label": c, "value": c} for c in ["Nom", "Localisation", "Téléphone", "Note", "Avis", "Site web", "Google Maps"]],
-                        value=["Nom", "Localisation", "Téléphone", "Note", "Avis", "Site web", "Google Maps"],
+                        options=[{"label": c, "value": c} for c in ALL_COLS],
+                        value=list(ALL_COLS),
                         style={"padding": "8px 12px"},
                     )
                 ],
                 color="secondary", size="sm",
                 toggle_style={"fontSize": "0.85rem"},
             ), md="auto"),
-            dbc.Col(html.Div(id="lf-result-count", className="text-muted"), md=True, className="text-end d-flex align-items-center justify-content-end"),
+            dbc.Col(html.Div(id="lf-result-count", className="text-muted small"),
+                    md=True, className="d-flex align-items-center justify-content-end text-end"),
+            dbc.Col(dbc.Button(
+                [html.I(className="bi bi-file-earmark-excel me-1"), "Excel"],
+                id="lf-btn-csv", color="success", outline=True, size="sm",
+                title="Exporter les résultats affichés en Excel",
+            ), md="auto"),
         ], className="mb-2 g-2", align="center"),
 
         # Collapse filtres par colonne
@@ -194,20 +312,29 @@ def layout():
             dbc.Card(dbc.CardBody(
                 html.Div(id="lf-filter-inputs-container"),
                 style={"padding": "8px"},
-            ), style={"backgroundColor": "#1e1e1e", "border": "1px solid #444"}),
+            ), className="lf-filter-card"),
             id="lf-collapse-filters",
             is_open=False,
             className="mb-2",
         ),
 
-        # Loading + results
-        dcc.Loading(id="lf-loading", children=[
-            html.Div(id="lf-table-results"),
-        ], type="circle"),
+        # Message d'erreur visible (clé API, réseau…)
+        dbc.Alert(
+            id="lf-error-alert", color="danger", is_open=False, dismissable=True,
+            className="d-flex align-items-center gap-2",
+        ),
 
-        # Hidden stores
+        # Barre de progression de la recherche
+        html.Div(id="lf-progress-wrap", className="mb-2"),
+
+        # Résultats
+        html.Div(id="lf-table-results"),
+
+        # Hidden stores / mécanique
         dcc.Store(id="lf-store-data"),
         dcc.Store(id="lf-col-filters", data={}),
+        dcc.Store(id="lf-search-token"),
+        dcc.Interval(id="lf-progress-interval", interval=400, disabled=True),
         dcc.Download(id="lf-download-csv"),
         dcc.Store(id="lf-pending-prospect", data=None),
 
@@ -220,7 +347,7 @@ def layout():
             dbc.ModalBody([
                 html.P("Ajouter à un groupe existant :", className="text-muted mb-2"),
                 html.Div(id="lf-modal-groups"),
-                html.Hr(style={"borderColor": "#444"}),
+                html.Hr(),
                 html.P("Ou créer un nouveau groupe :", className="text-muted mb-2"),
                 dbc.Row([
                     dbc.Col(dbc.Input(id="lf-modal-new-group", placeholder="Nom du groupe...", size="sm"), md=8),
@@ -235,27 +362,68 @@ def layout():
 # ── Callbacks ────────────────────────────────────────────────────────
 
 def register_callbacks(app):
+
+    # 1) Démarrer une recherche (clic bouton OU touche Entrée dans un champ)
     @app.callback(
-        Output("lf-store-data", "data"),
+        Output("lf-search-token", "data"),
+        Output("lf-progress-interval", "disabled"),
+        Output("lf-progress-wrap", "children"),
+        Output("lf-error-alert", "is_open"),
         Input("lf-btn-search", "n_clicks"),
+        Input("lf-input-city", "n_submit"),
+        Input("lf-input-activity", "n_submit"),
         State("lf-input-city", "value"),
         State("lf-input-activity", "value"),
         prevent_initial_call=True,
     )
-    def run_search(n, city, activity):
+    def start_search(n_clicks, ns_city, ns_activity, city, activity):
         if not city or not activity:
-            return no_update
-        query = f"{activity} à {city}"
-        try:
-            places = search_all_pages(query)
-            places = enrich_with_details(places)
-            df = places_to_df(places)
-            return df.to_dict("records")
-        except Exception as e:
-            print(f"[LeadFinder] Erreur API : {e}")
-            return []
+            warn = dbc.Alert(
+                "Saisis une ville ET une activité avant de lancer la recherche.",
+                color="secondary", className="py-2 mb-0 small",
+            )
+            return no_update, True, warn, False
 
-    ALL_COLS = ["Nom", "Localisation", "Téléphone", "Note", "Avis", "Site web", "Google Maps"]
+        token = uuid.uuid4().hex
+        with _search_lock:
+            _SEARCH_STATE.clear()  # on ne garde que la recherche en cours
+            _SEARCH_STATE[token] = {
+                "pct": 3, "message": "Démarrage…",
+                "done": False, "error": False, "results": [],
+            }
+        threading.Thread(
+            target=_run_search_job, args=(token, city, activity), daemon=True
+        ).start()
+        return token, False, _progress_view(3, "Démarrage…"), False
+
+    # 2) Suivre la progression (polling) → alimente la barre, puis livre les résultats
+    @app.callback(
+        Output("lf-progress-wrap", "children", allow_duplicate=True),
+        Output("lf-progress-interval", "disabled", allow_duplicate=True),
+        Output("lf-store-data", "data"),
+        Output("lf-error-alert", "children"),
+        Output("lf-error-alert", "is_open", allow_duplicate=True),
+        Input("lf-progress-interval", "n_intervals"),
+        State("lf-search-token", "data"),
+        prevent_initial_call=True,
+    )
+    def poll_progress(_n, token):
+        if not token:
+            return no_update, True, no_update, no_update, no_update
+        with _search_lock:
+            st = dict(_SEARCH_STATE.get(token, {}))
+        if not st:
+            return no_update, True, no_update, no_update, no_update
+
+        if st.get("done"):
+            if st.get("error"):
+                err = html.Span([html.I(className="bi bi-exclamation-triangle-fill me-2"), st["message"]])
+                return "", True, no_update, err, True
+            # succès (résultats, éventuellement liste vide)
+            return "", True, st.get("results", []), no_update, False
+
+        # en cours
+        return _progress_view(st.get("pct", 0), st.get("message", "")), False, no_update, no_update, no_update
 
     # Toggle panneau filtres
     @app.callback(
@@ -269,6 +437,7 @@ def register_callbacks(app):
     )
     def toggle_filters(n, is_open, visible_cols, current_filters):
         visible = visible_cols or ALL_COLS
+        current_filters = current_filters or {}
         inputs = dbc.Row([
             dbc.Col([
                 html.Small(c, className="text-muted d-block mb-1"),
@@ -278,7 +447,7 @@ def register_callbacks(app):
                     placeholder=f"Filtrer {c}...",
                     size="sm",
                     debounce=True,
-                    style={"backgroundColor": "#2a2a2a", "color": "#ddd", "border": "1px solid #555"},
+                    className="lf-filter-input",
                 ),
             ], md=True)
             for c in visible if c != "Google Maps"
@@ -315,13 +484,16 @@ def register_callbacks(app):
         Input("lf-col-visibility", "value"),
     )
     def update_table(records, filters, col_filters, visible_cols):
+        if records is None:
+            return _welcome_state(), ""
         if not records:
-            return "", ""
+            return _no_results_state(), "0 résultat"
+
         df = pd.DataFrame(records)
 
         total = len(df)
         if "no_site" in (filters or []):
-            df = df[df["Site web"].fillna("").str.strip() == ""]
+            df = df[df["Site web"].fillna("").astype(str).str.strip() == ""]
 
         # Appliquer filtres par colonne
         for col, val in (col_filters or {}).items():
@@ -332,12 +504,13 @@ def register_callbacks(app):
         cols = [c for c in ALL_COLS if c in (visible_cols or ALL_COLS)]
 
         header = html.Thead(html.Tr(
-            [html.Th("", style={"padding": "8px 6px", "width": "32px"})] +
-            [html.Th(c, style={"padding": "8px 10px", "whiteSpace": "nowrap"}) for c in cols]
+            [html.Th("", style={"width": "32px"})] +
+            [html.Th(c, style={"whiteSpace": "nowrap"}) for c in cols]
         ))
 
         rows = []
         for i, row in enumerate(df.reset_index(drop=True).to_dict("records")):
+            no_site = not str(row.get("Site web") or "").strip()
             cells = [html.Td(
                 dbc.Button(
                     html.I(className="bi bi-plus-circle"),
@@ -352,21 +525,22 @@ def register_callbacks(app):
             for c in cols:
                 val = str(row.get(c, ""))
                 if c == "Google Maps" and val:
-                    cells.append(html.Td(html.A("Voir", href=val, target="_blank", style={"color": "#4dabf7"}), style={"padding": "6px 10px"}))
+                    cells.append(html.Td(html.A("Voir", href=val, target="_blank", className="lf-link")))
                 elif c == "Site web" and val:
-                    cells.append(html.Td(html.A(val, href=val, target="_blank", style={"color": "#4dabf7", "wordBreak": "break-all"}), style={"padding": "6px 10px", "maxWidth": "200px"}))
+                    cells.append(html.Td(html.A(val, href=val, target="_blank", className="lf-link",
+                                                style={"wordBreak": "break-all"}), style={"maxWidth": "200px"}))
                 else:
-                    bg = "#1a3a1a" if c == "Nom" and not row.get("Site web", "").strip() else "transparent"
-                    cells.append(html.Td(val, style={"padding": "6px 10px", "backgroundColor": bg}))
+                    cls = "lf-cell-nosite" if (c == "Nom" and no_site) else None
+                    cells.append(html.Td(val, className=cls))
             rows.append(html.Tr(cells))
 
         table = dbc.Table(
             [header, html.Tbody(rows)],
-            bordered=True, dark=True, hover=False, size="sm",
-            style={"fontSize": "0.85rem"},
+            bordered=False, color="dark", hover=True, size="sm",
+            className="lf-table align-middle",
         )
 
-        count_text = f"{shown} résultats affichés / {total} trouvés au total"
+        count_text = f"{shown} affichés / {total} trouvés"
         return table, count_text
 
     @app.callback(
@@ -384,7 +558,7 @@ def register_callbacks(app):
         df = pd.DataFrame(records)
         # Appliquer les mêmes filtres que le tableau affiché
         if "no_site" in (filters or []):
-            df = df[df["Site web"].fillna("").str.strip() == ""]
+            df = df[df["Site web"].fillna("").astype(str).str.strip() == ""]
         for col, val in (col_filters or {}).items():
             if val and col in df.columns:
                 df = df[df[col].astype(str).str.contains(val, case=False, na=False)]
@@ -399,8 +573,7 @@ def register_callbacks(app):
             for col_cells in ws.columns:
                 max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
                 ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 50)
-        buf.seek(0)
-        return dcc.send_bytes(buf.read, "leads.xlsx")
+        return dcc.send_bytes(buf.getvalue(), "leads.xlsx")
 
     # Ouvrir le modal ajout prospect
     @app.callback(
@@ -411,10 +584,11 @@ def register_callbacks(app):
         Input({"type": "lf-add-prospect-btn", "idx": ALL}, "n_clicks"),
         State("lf-store-data", "data"),
         State("lf-filter-no-site", "value"),
+        State("lf-col-filters", "data"),
         prevent_initial_call=True,
     )
-    def open_prospect_modal(n_clicks_list, records, filters):
-        from pages.prospects import get_groups, add_prospect_to_group
+    def open_prospect_modal(n_clicks_list, records, filters, col_filters):
+        from pages.prospects import get_groups
         ctx = callback_context
         if not ctx.triggered or not any(n_clicks_list):
             return no_update, no_update, no_update, no_update
@@ -429,9 +603,15 @@ def register_callbacks(app):
         if not records:
             return no_update, no_update, no_update, no_update
 
+        # IMPORTANT : reconstruire le DataFrame avec EXACTEMENT les mêmes filtres
+        # que le tableau affiché (no_site + filtres colonne), sinon l'index `idx`
+        # ne pointe pas sur la bonne ligne et on ajoute le mauvais lead.
         df = pd.DataFrame(records)
         if "no_site" in (filters or []):
-            df = df[df["Site web"].fillna("").str.strip() == ""]
+            df = df[df["Site web"].fillna("").astype(str).str.strip() == ""]
+        for col, val in (col_filters or {}).items():
+            if val and col in df.columns:
+                df = df[df[col].astype(str).str.contains(val, case=False, na=False)]
         df = df.reset_index(drop=True)
 
         if idx >= len(df):

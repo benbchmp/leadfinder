@@ -43,20 +43,39 @@ fi
 echo "Fichier .env trouvé."
 echo ""
 
-# 3. Installer les dépendances
+# 3. Créer / activer un environnement isolé (.venv)
+#    Évite de polluer le Python du Mac et contourne le blocage
+#    "externally-managed-environment" rencontré sur certains Mac.
+if [ ! -d ".venv" ]; then
+    echo "Création de l'environnement isolé (première fois)..."
+    $PY -m venv .venv
+fi
+# shellcheck disable=SC1091
+source .venv/bin/activate
+
+# 4. Installer les dépendances (dans le .venv)
 echo "Installation des dépendances (peut prendre 1-2 minutes la première fois)..."
-$PIP install -r requirements.txt --quiet
+python -m pip install --upgrade pip --quiet
+python -m pip install -r requirements.txt --quiet
 echo "Dépendances OK."
 echo ""
 
-# 4. Lancer l'application
+# 5. Lancer l'application
 PORT=8060
 echo "Lancement de LeadFinder sur http://127.0.0.1:$PORT"
 echo "Pour arrêter : appuie sur Ctrl+C dans ce terminal"
 echo ""
 
-# 5. Ouvrir le navigateur après 2 secondes (en arrière-plan)
-(sleep 2 && open "http://127.0.0.1:$PORT") &
+# 6. Ouvrir le navigateur DÈS QUE le serveur répond (max ~30s d'attente).
+#    Évite la page "connexion impossible" sur un Mac lent : on attend que
+#    le serveur soit prêt au lieu d'ouvrir aveuglément après 2 secondes.
+(
+  for _ in $(seq 1 30); do
+    if curl -s -o /dev/null "http://127.0.0.1:$PORT"; then break; fi
+    sleep 1
+  done
+  open "http://127.0.0.1:$PORT"
+) &
 
-# 6. Démarrer le serveur
-$PY app.py
+# 7. Démarrer le serveur
+python app.py

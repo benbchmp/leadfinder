@@ -1,0 +1,169 @@
+/* =====================================================================
+   LeadFinder — polish dark cohérent
+   Thème DARKLY conservé · accent bleu #4dabf7 · police système (premium
+   sur Mac, zéro dépendance réseau) · accessibilité (focus, contraste WCAG AA).
+   Dash charge automatiquement tous les .css du dossier assets/.
+   ===================================================================== */
+
+:root {
+  --lf-accent: #4dabf7;
+  --lf-accent-soft: rgba(77, 171, 247, 0.14);
+  --lf-surface: #262626;
+  --lf-border: #3a3a3a;
+  --lf-muted: #9aa3ad;        /* contraste >= 4.5:1 sur fonds sombres (WCAG AA) */
+}
+
+/* ---- Police système : rendu natif net sur le Mac de l'utilisateur -------- */
+body,
+input, select, textarea, button,
+.form-control, .btn, .dropdown-menu, .nav, .card, .alert, .modal {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+body { letter-spacing: 0.005em; }
+
+/* ---- Texte secondaire lisible (corrige le contraste trop faible) --------- */
+.text-muted { color: var(--lf-muted) !important; }
+
+/* ---- En-têtes de page cohérents entre les 3 onglets ---------------------- */
+h5, .h5 { font-weight: 600; letter-spacing: 0.01em; }
+.container-fluid { max-width: 1320px; }
+
+/* ---- Navbar : marque + contrôle segmenté d'onglets ----------------------- */
+.lf-navbar { border-bottom: 1px solid #2a2a2a; }
+.lf-brand {
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
+  color: #e8edf2;
+}
+/* Conteneur "pilule" qui regroupe les 3 onglets */
+.lf-nav-group {
+  display: inline-flex;
+  gap: 2px;
+  padding: 4px;
+  background: #1b1b1b;
+  border: 1px solid #333;
+  border-radius: 12px;
+}
+.lf-nav-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  border-radius: 9px;
+  color: var(--lf-muted);
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+.lf-nav-tab .lf-nav-ico { font-size: 0.95rem; opacity: 0.9; }
+.lf-nav-tab:hover:not(.active) {
+  background-color: var(--lf-accent-soft);
+  color: #cfe6ff;
+}
+.lf-nav-tab.active {
+  background: #1a6fa8;
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+/* ---- Focus visible (navigation clavier) ---------------------------------- */
+a:focus-visible,
+button:focus-visible,
+.btn:focus-visible,
+.form-control:focus-visible,
+.form-check-input:focus-visible,
+.dropdown-item:focus-visible {
+  outline: 2px solid var(--lf-accent);
+  outline-offset: 2px;
+}
+.form-control:focus {
+  border-color: var(--lf-accent);
+  box-shadow: 0 0 0 0.15rem rgba(77, 171, 247, 0.25);
+}
+
+/* ---- Boutons : transitions douces (150-300ms) ---------------------------- */
+.btn {
+  transition: background-color 0.18s ease, border-color 0.18s ease,
+    color 0.18s ease, box-shadow 0.18s ease;
+}
+
+/* ---- Liens ---------------------------------------------------------------- */
+.lf-link { color: var(--lf-accent); text-decoration: none; }
+.lf-link:hover { text-decoration: underline; }
+
+/* ---- Tableaux ------------------------------------------------------------- */
+.lf-table { font-size: 0.85rem; border-radius: 8px; overflow: hidden; }
+.lf-table thead th {
+  background-color: #2a2a2a;
+  color: #cdd3da;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--lf-border);
+  padding: 9px 12px;
+  white-space: nowrap;
+}
+.lf-table td { padding: 7px 12px; border-color: #2e2e2e; }
+.lf-table tbody tr { transition: background-color 0.12s ease; }
+/* Surligne un lead SANS site web (la cible à prospecter).
+   Sélecteur `td.lf-cell-nosite` (spécificité 0,2,1) pour battre `.lf-table td`
+   (0,1,1) qui sinon écrase la couleur de la bordure. Fond vert léger + liseré. */
+.lf-table td.lf-cell-nosite {
+  border-left: 3px solid #2f9e44;
+  background-color: rgba(47, 158, 68, 0.14);
+  font-weight: 600;
+}
+
+/* ---- Panneau de filtres / champs ----------------------------------------- */
+.lf-filter-card { background-color: var(--lf-surface); border: 1px solid var(--lf-border); }
+.lf-filter-input {
+  background-color: #2a2a2a;
+  color: #e6e6e6;
+  border: 1px solid var(--lf-border);
+}
+.lf-filter-input::placeholder { color: #7c8590; }
+
+/* ---- Carte de recherche (barre de leads) --------------------------------- */
+.lf-search-card { background-color: #222; border: 1px solid var(--lf-border); border-radius: 14px; }
+.lf-search-card .card-body { padding: 14px 16px; }
+/* Icônes en tête de champ (📍 ville, 🏪 activité) */
+.input-group-text {
+  background-color: #2a2a2a;
+  border-color: var(--lf-border);
+  color: var(--lf-muted);
+}
+/* Quand on tape dans un champ, l'icône s'accorde à l'accent bleu */
+.input-group:focus-within .input-group-text {
+  border-color: var(--lf-accent);
+  color: var(--lf-accent);
+}
+.lf-search-card .form-control { font-size: 0.95rem; }
+.lf-search-card .btn { font-weight: 500; }
+
+/* ---- Barre de progression de la recherche -------------------------------- */
+.lf-progress-wrap { max-width: 640px; }
+.lf-progress { background-color: #2a2a2a; }
+.lf-progress-status { color: var(--lf-accent); font-variant-numeric: tabular-nums; }
+
+/* ---- États vides (accueil / aucun résultat) ------------------------------ */
+.lf-empty-state { color: var(--lf-muted); }
+.lf-empty-icon { display: block; font-size: 2.2rem; opacity: 0.35; margin-bottom: 0.4rem; }
+
+/* ---- Cartes (KPI Call Tracker, etc.) : coins légèrement arrondis --------- */
+.card { border-radius: 10px; }
+
+/* ---- Respect de la préférence "réduire les animations" ------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+  }
+}

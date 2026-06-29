@@ -2,6 +2,7 @@
 Prospects – Watchlist par groupes
 Données persistées dans prospects_data.json
 """
+from __future__ import annotations
 
 import io
 import json
@@ -285,7 +286,7 @@ def _build_table(gid: str, groups: list[dict]) -> html.Div:
                     placeholder="Ajouter une note...",
                     size="sm",
                     debounce=True,
-                    style={"backgroundColor": "#2a2a2a", "color": "#ddd", "border": "1px solid #444"},
+                    className="lf-filter-input",
                 ),
                 style={"padding": "4px 10px"},
             ),
@@ -306,8 +307,8 @@ def _build_table(gid: str, groups: list[dict]) -> html.Div:
 
     table = dbc.Table(
         [header, html.Tbody(rows)],
-        bordered=True, dark=True, hover=False, size="sm",
-        style={"fontSize": "0.85rem"},
+        bordered=False, color="dark", hover=True, size="sm",
+        className="lf-table align-middle",
     )
 
     return html.Div([
@@ -469,12 +470,22 @@ def register_callbacks(app):
         ctx = callback_context
         if not ctx.triggered:
             return no_update
-        for i, triggered in enumerate(ctx.triggered):
-            if triggered["value"] is None:
+        import json as _json
+        changed = False
+        # On identifie le champ modifié par SON prop_id (et non par sa position
+        # dans ctx.triggered, qui ne contient que les inputs réellement changés)
+        # — sinon la note d'un prospect est écrite sur un autre.
+        for triggered in ctx.triggered:
+            if triggered.get("value") is None:
                 continue
-            id_dict = ids[i]
+            id_str = triggered["prop_id"].rsplit(".", 1)[0]  # retire le ".value" final
+            try:
+                id_dict = _json.loads(id_str)
+            except Exception:
+                continue
             update_notes(id_dict["gid"], id_dict["idx"], triggered["value"])
-        return trigger + 1
+            changed = True
+        return trigger + 1 if changed else no_update
 
     # Supprimer un prospect
     @app.callback(
@@ -572,6 +583,5 @@ def register_callbacks(app):
             for col_cells in ws.columns:
                 max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
                 ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 50)
-        buf.seek(0)
         filename = f"prospects_{safe_name}.xlsx"
-        return dcc.send_bytes(buf.read, filename)
+        return dcc.send_bytes(buf.getvalue(), filename)
