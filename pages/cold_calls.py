@@ -160,7 +160,7 @@ def layout():
                     dbc.RadioItems(
                         id="cc-user-selector",
                         options=[
-                            {"label": "🐼  Benjamin", "value": "Benjamin"},
+                            {"label": "🦊  Benjamin", "value": "Benjamin"},
                             {"label": "😺  Lucas", "value": "Lucas"}
                         ],
                         value="Benjamin",
