@@ -285,6 +285,21 @@ def layout():
                 id="lf-btn-toggle-filters",
                 color="secondary", outline=True, size="sm",
             ), md="auto"),
+            dbc.Col(dbc.InputGroup([
+                dbc.InputGroupText(html.I(className="bi bi-arrow-down-up")),
+                dbc.Select(
+                    id="lf-sort-by",
+                    options=[{"label": c, "value": c} for c in ALL_COLS],
+                    value="Nom",
+                    style={"fontSize": "0.85rem"},
+                ),
+                dbc.Button(
+                    html.I(className="bi bi-arrow-up"),
+                    id="lf-sort-order", color="secondary", outline=True,
+                    title="Inverser l'ordre", size="sm",
+                    style={"padding": "5px 8px"},
+                ),
+            ], size="sm"), md="auto"),
             dbc.Col(dbc.DropdownMenu(
                 label=html.Span([html.I(className="bi bi-layout-three-columns me-1"), "Colonnes"]),
                 children=[
@@ -334,6 +349,7 @@ def layout():
         dcc.Store(id="lf-store-data"),
         dcc.Store(id="lf-col-filters", data={}),
         dcc.Store(id="lf-search-token"),
+        dcc.Store(id="lf-sort-order-state", data=True),  # True = ascending, False = descending
         dcc.Interval(id="lf-progress-interval", interval=400, disabled=True),
         dcc.Download(id="lf-download-csv"),
         dcc.Store(id="lf-pending-prospect", data=None),
@@ -475,6 +491,19 @@ def register_callbacks(app):
             "Site web": site or "",
         }
 
+    # Inverser l'ordre du tri
+    @app.callback(
+        Output("lf-sort-order-state", "data"),
+        Output("lf-sort-order", "children"),
+        Input("lf-sort-order", "n_clicks"),
+        State("lf-sort-order-state", "data"),
+        prevent_initial_call=True,
+    )
+    def toggle_sort_order(n_clicks, is_ascending):
+        new_order = not is_ascending
+        icon = html.I(className="bi bi-arrow-up" if new_order else "bi bi-arrow-down")
+        return new_order, icon
+
     @app.callback(
         Output("lf-table-results", "children"),
         Output("lf-result-count", "children"),
@@ -482,8 +511,10 @@ def register_callbacks(app):
         Input("lf-filter-no-site", "value"),
         Input("lf-col-filters", "data"),
         Input("lf-col-visibility", "value"),
+        Input("lf-sort-by", "value"),
+        Input("lf-sort-order-state", "data"),
     )
-    def update_table(records, filters, col_filters, visible_cols):
+    def update_table(records, filters, col_filters, visible_cols, sort_col, ascending):
         if records is None:
             return _welcome_state(), ""
         if not records:
@@ -499,6 +530,10 @@ def register_callbacks(app):
         for col, val in (col_filters or {}).items():
             if val and col in df.columns:
                 df = df[df[col].astype(str).str.contains(val, case=False, na=False)]
+
+        # Appliquer le tri
+        if sort_col and sort_col in df.columns:
+            df = df.sort_values(by=sort_col, ascending=ascending, na_position="last")
 
         shown = len(df)
         cols = [c for c in ALL_COLS if c in (visible_cols or ALL_COLS)]
